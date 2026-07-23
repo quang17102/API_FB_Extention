@@ -31,7 +31,9 @@ let autoRotateIndex = 0; // con trỏ xoay vòng toàn cục (không phân biệ
 const pendingRequests = new Map(); // requestId -> { resolve, reject, timer }
 
 // Gửi yêu cầu "get_cookies" tới 1 socket cụ thể, chờ phản hồi qua WebSocket.
-function getSessionFromSocket(socket) {
+// options.forceFreshTokens: true -> yêu cầu extension bỏ qua cache fbDtsg, fetch mới hẳn
+// (dùng khi retry sau khi Facebook từ chối request vì token cũ).
+function getSessionFromSocket(socket, options = {}) {
   if (!socket || socket.readyState !== socket.OPEN) {
     return Promise.reject(new LiveCookieError("Extension đã ngắt kết nối.", 503));
   }
@@ -45,24 +47,36 @@ function getSessionFromSocket(socket) {
     }, LIVE_REQUEST_TIMEOUT_MS);
 
     pendingRequests.set(requestId, { resolve, reject, timer });
-    socket.send(JSON.stringify({ type: "get_cookies", requestId }));
+    socket.send(
+      JSON.stringify({ type: "get_cookies", requestId, forceFreshTokens: !!options.forceFreshTokens })
+    );
   });
 }
 
-// Lấy session từ đúng extension đã đăng ký phụ trách pageId này (round-robin nếu có
-// nhiều extension cùng đăng ký 1 pageId, ví dụ tài khoản dự phòng).
-function getLiveSession(pageId) {
+// Chọn đúng socket của extension đã đăng ký phụ trách pageId này (round-robin nếu có
+// nhiều extension cùng đăng ký 1 pageId, ví dụ tài khoản dự phòng). Throw đồng bộ nếu
+// không có ai đăng ký — gọi trong try/catch.
+function pickSocketForPageId(pageId) {
   const candidates = registrations.filter((r) => r.pageId === pageId);
   if (!candidates.length) {
-    return Promise.reject(
-      new LiveCookieError(`Chưa có extension nào đăng ký phụ trách pageId=${pageId}.`, 503)
-    );
+    throw new LiveCookieError(`Chưa có extension nào đăng ký phụ trách pageId=${pageId}.`, 503);
   }
 
   const idx = (pageRotationIndex.get(pageId) || 0) % candidates.length;
   pageRotationIndex.set(pageId, idx + 1);
 
-  return getSessionFromSocket(candidates[idx].socket);
+  return candidates[idx].socket;
+}
+
+// Lấy session từ đúng extension đã đăng ký phụ trách pageId này.
+function getLiveSession(pageId, options) {
+  let socket;
+  try {
+    socket = pickSocketForPageId(pageId);
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  return getSessionFromSocket(socket, options);
 }
 
 // Chọn extension tiếp theo theo vòng xoay toàn cục — dùng cho chế độ tự động của
@@ -123,21 +137,35 @@ app.get("/api/wrapped_url", async (req, res) => {
   const pageId = String(postId).split("_")[0];
 
   try {
-    const session = await getLiveSession(pageId);
+    const socket = pickSocketForPageId(pageId);
+    const session = await getSessionFromSocket(socket);
     if (!session.fbDtsg) {
       return res.status(502).json({
         error: "Không lấy được fb_dtsg. Hãy đảm bảo profile đó đang đăng nhập Facebook, rồi thử lại.",
       });
     }
 
-    const wrappedUrl = await createWrappedShareUrl({
-      cookie: session.cookieString,
-      fbDtsg: session.fbDtsg,
-      userId: session.userId,
-      postId,
-    });
+    try {
+      const wrappedUrl = await createWrappedShareUrl({
+        cookie: session.cookieString,
+        fbDtsg: session.fbDtsg,
+        userId: session.userId,
+        postId,
+      });
+      return res.json({ wrappedUrl });
+    } catch (err) {
+      // fbDtsg cache (phía extension) có thể đã cũ -> lấy token mới rồi thử lại đúng 1 lần.
+      const freshSession = await getSessionFromSocket(socket, { forceFreshTokens: true });
+      if (!freshSession.fbDtsg) throw err;
 
-    res.json({ wrappedUrl });
+      const wrappedUrl = await createWrappedShareUrl({
+        cookie: freshSession.cookieString,
+        fbDtsg: freshSession.fbDtsg,
+        userId: freshSession.userId,
+        postId,
+      });
+      return res.json({ wrappedUrl });
+    }
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }
@@ -146,7 +174,9 @@ app.get("/api/wrapped_url", async (req, res) => {
 // Đăng post rồi lấy luôn wrapped_url. postId đã tồn tại (đăng thành công thật trên
 // Facebook) thì KHÔNG được phép failover sang page khác nữa — tránh đăng trùng nội
 // dung lên nhiều page. err.stage đánh dấu lỗi xảy ra ở bước nào để phân biệt.
-async function postAndGetLink(session, pageId, message) {
+// socket: đúng extension đã dùng để lấy session ban đầu — dùng lại (không đổi sang
+// extension khác) khi cần retry với fbDtsg mới.
+async function postAndGetLink(socket, session, pageId, message) {
   const postResult = await createPost({ cookie: session.cookieString, pageId, message });
   const postId = postResult.data?.id || postResult.data?.post_id || null;
 
@@ -176,9 +206,23 @@ async function postAndGetLink(session, pageId, message) {
     });
     return { postId, wrappedUrl };
   } catch (err) {
-    err.stage = "wrapped_url";
-    err.postId = postId;
-    throw err;
+    // fbDtsg cache (phía extension) có thể đã cũ -> lấy token mới rồi thử lại đúng 1 lần.
+    try {
+      const freshSession = await getSessionFromSocket(socket, { forceFreshTokens: true });
+      if (!freshSession.fbDtsg) throw err;
+
+      const wrappedUrl = await createWrappedShareUrl({
+        cookie: freshSession.cookieString,
+        fbDtsg: freshSession.fbDtsg,
+        userId: freshSession.userId,
+        postId,
+      });
+      return { postId, wrappedUrl };
+    } catch (retryErr) {
+      retryErr.stage = "wrapped_url";
+      retryErr.postId = postId;
+      throw retryErr;
+    }
   }
 }
 
@@ -193,8 +237,9 @@ app.post("/api/create_post_with_link", async (req, res) => {
 
   if (pageId) {
     try {
-      const session = await getLiveSession(pageId);
-      const { postId, wrappedUrl } = await postAndGetLink(session, pageId, message);
+      const socket = pickSocketForPageId(pageId);
+      const session = await getSessionFromSocket(socket);
+      const { postId, wrappedUrl } = await postAndGetLink(socket, session, pageId, message);
       return res.json({ ok: true, pageId, postId, wrappedUrl });
     } catch (err) {
       return res.status(err.status || 500).json({ error: err.message, pageId, postId: err.postId || null });
@@ -213,7 +258,7 @@ app.post("/api/create_post_with_link", async (req, res) => {
 
     try {
       const session = await getSessionFromSocket(picked.socket);
-      const { postId, wrappedUrl } = await postAndGetLink(session, picked.pageId, message);
+      const { postId, wrappedUrl } = await postAndGetLink(picked.socket, session, picked.pageId, message);
       return res.json({
         ok: true,
         pageId: picked.pageId,
