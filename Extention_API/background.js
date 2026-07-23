@@ -79,14 +79,28 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
+// Yêu cầu tới từ server (curl/API), không phải người dùng click trực tiếp, nên không thể
+// dựa vào "tab đang active" — lúc đó Chrome có thể coi 1 cửa sổ khác là "focus gần nhất"
+// dù cửa sổ đó không chứa tab Facebook. Tìm thẳng tab nào đang mở facebook.com thay vì đoán
+// qua active/lastFocusedWindow.
+async function findFacebookTab() {
+  const fbTabs = await chrome.tabs.query({ url: ["*://*.facebook.com/*"] });
+  if (fbTabs.length) {
+    return fbTabs.find((t) => t.active) || fbTabs[0];
+  }
+  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return activeTab || null;
+}
+
 async function handleGetCookies(requestId) {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const tab = await findFacebookTab();
     if (!tab || !tab.url) {
-      throw new Error("Không tìm thấy tab đang active.");
+      throw new Error("Không tìm thấy tab Facebook nào đang mở.");
     }
 
     const cookies = await chrome.cookies.getAll({ url: tab.url });
+    console.log(`[FB_API] get_cookies: tab.url=${tab.url} -> ${cookies.length} cookie(s).`);
     const cookieString = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     const cUserCookie = cookies.find((c) => c.name === "c_user");
 
