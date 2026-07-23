@@ -84,11 +84,19 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // fb_dtsg/lsd TƯƠI MỚI từ server. Đọc HTML tab đã mở sẵn (cách cũ) dễ bị stale vì
 // Facebook là SPA, có thể tự xoay token phía client mà không re-render lại HTML gốc.
 const TOKEN_DISCOVERY_URLS = ["https://www.facebook.com/", "https://business.facebook.com/"];
+const TOKEN_FETCH_TIMEOUT_MS = 8000;
 
 async function fetchFreshFacebookTokens() {
   for (const url of TOKEN_DISCOVERY_URLS) {
     try {
-      const res = await fetch(url, { credentials: "include", cache: "no-store" });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), TOKEN_FETCH_TIMEOUT_MS);
+      let res;
+      try {
+        res = await fetch(url, { credentials: "include", cache: "no-store", signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
       const html = await res.text();
       const tokens = parseFacebookTokens(html);
       console.log(
@@ -96,7 +104,9 @@ async function fetchFreshFacebookTokens() {
           `fbDtsg=${tokens.fbDtsg ? tokens.fbDtsg.slice(0, 12) + "..." : "null"}, ` +
           `lsd=${tokens.lsd ? tokens.lsd.slice(0, 8) + "..." : "null"}, userId=${tokens.userId}`
       );
-      if (tokens.fbDtsg && tokens.lsd) return tokens;
+      // Chỉ cần fbDtsg (lsd không còn dùng trong request thật nữa) -> dừng ngay, không
+      // fetch thêm URL dự phòng nếu không cần thiết, tránh tốn thời gian/dễ timeout.
+      if (tokens.fbDtsg) return tokens;
     } catch (err) {
       console.log(`[FB_API] fetch tokens từ ${url} lỗi: ${err.message}`);
     }

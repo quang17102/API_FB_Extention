@@ -7,7 +7,9 @@ const { createWrappedShareUrl } = require("./shareUrl");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const LIVE_REQUEST_TIMEOUT_MS = 5000;
+// fb_dtsg/lsd giờ lấy qua fetch() thật ra facebook.com/business.facebook.com (1-2 round-trip
+// mạng, thử tuần tự) thay vì đọc HTML tab tức thời như trước — cần timeout rộng hơn 5s cũ.
+const LIVE_REQUEST_TIMEOUT_MS = 15000;
 
 app.use(express.json({ limit: "1mb" }));
 
