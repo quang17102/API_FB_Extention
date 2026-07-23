@@ -64,6 +64,7 @@ Chạy: `cd Server_API && npm install && npm start` (mặc định port `3000`, 
 - Bọc package `facebook-business`. `getPageToken()` trả `null` khi thất bại (không throw); `createPagePost()` luôn resolve `{ ok, data, attempts }` (không throw khi Facebook từ chối — phải kiểm tra `result.ok`).
 - Cache `pageAccessToken` theo `pageId` vào `pageTokens.json` (gitignore): dùng cache trước, chỉ `getPageToken` lại khi chưa có cache hoặc lần đăng trước thất bại (`result.ok === false`), thử lại đúng 1 lần với token mới.
 - Page Access Token đại diện cho **Page** (không gắn với tài khoản cá nhân nào lấy nó) — dù extension/tài khoản nào trong vòng xoay lấy token, cache theo `pageId` vẫn dùng lại bình thường.
+- Đọc/ghi `pageTokens.json` được tuần tự hoá qua 1 hàng đợi chung (`withFileLock`) — nhiều request chạy song song (nhiều page trong auto-rotate, hoặc gọi API đồng thời) trước đây có thể cùng đọc/ghi file này cùng lúc, khiến JSON bị cắt cụt (`Unexpected end of JSON input`) do 1 request đọc trúng lúc request khác đang ghi dở. Đã fix.
 
 ## Lưu ý / nợ kỹ thuật
 

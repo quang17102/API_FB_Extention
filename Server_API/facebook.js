@@ -15,13 +15,30 @@ class FacebookPostError extends Error {
   }
 }
 
+// Nhiều request (nhiều page trong auto-rotate, hoặc gọi song song) có thể cùng đọc/ghi
+// pageTokens.json cùng lúc — nếu không tuần tự hoá, 1 request có thể đọc trúng lúc request
+// khác đang ghi dở, làm JSON bị cắt cụt ("Unexpected end of JSON input"). Dồn mọi lượt đọc
+// và ghi qua 1 hàng đợi chung để chúng không bao giờ chồng lấn.
+let ioQueue = Promise.resolve();
+function withFileLock(fn) {
+  const run = ioQueue.then(fn, fn);
+  ioQueue = run.then(
+    () => {},
+    () => {}
+  );
+  return run;
+}
+
 async function readTokenCache() {
   try {
     const raw = await fs.readFile(TOKEN_CACHE_FILE, "utf-8");
     return JSON.parse(raw);
   } catch (err) {
     if (err.code === "ENOENT") return {};
-    throw err;
+    // File tồn tại nhưng JSON hỏng (vd lần ghi trước bị chồng lấn) -> coi như chưa có
+    // cache thay vì làm sập cả request; lần lưu tiếp theo sẽ tự ghi đè lại file hợp lệ.
+    console.warn(`[facebook.js] pageTokens.json không đọc được (${err.message}), coi như rỗng.`);
+    return {};
   }
 }
 
@@ -30,14 +47,18 @@ async function writeTokenCache(cache) {
 }
 
 async function getCachedPageToken(pageId) {
-  const cache = await readTokenCache();
-  return cache[pageId]?.accessToken || null;
+  return withFileLock(async () => {
+    const cache = await readTokenCache();
+    return cache[pageId]?.accessToken || null;
+  });
 }
 
 async function saveCachedPageToken(pageId, accessToken) {
-  const cache = await readTokenCache();
-  cache[pageId] = { accessToken, updatedAt: new Date().toISOString() };
-  await writeTokenCache(cache);
+  return withFileLock(async () => {
+    const cache = await readTokenCache();
+    cache[pageId] = { accessToken, updatedAt: new Date().toISOString() };
+    await writeTokenCache(cache);
+  });
 }
 
 // getPageToken() trả về null (không throw) khi không lấy được token — chỉ cache khi có giá trị thật.
