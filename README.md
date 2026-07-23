@@ -54,9 +54,10 @@ Chạy: `cd Server_API && npm install && npm start` (mặc định port `3000`, 
 
 ### `shareUrl.js` — lấy wrapped_url (link share rút gọn)
 
-- Gọi thẳng `https://www.facebook.com/api/graphql/` (endpoint nội bộ của Facebook web, **không phải Graph API chính thức**) với `doc_id` cố định của mutation `useLinkSharingCreateWrappedUrlMutation`, header/body khớp request thật capture trong `test.py` (kể cả các header client-hint `sec-ch-ua*`, `sec-fetch-*`, `x-asbd-id`).
-- Cần `fb_dtsg`/`lsd`/`userId` (extension tự fetch trực tiếp từ facebook.com để lấy tươi, không qua tab đang mở — xem trên) + `cookie`. Không gửi `jazoest`/`lsd` trong body (chỉ `lsd` ở header `x-fb-lsd`) — khớp theo request đã xác nhận hoạt động thật.
-- Parser chịu được trường hợp Facebook trả về nhiều dòng JSON tách biệt (multi-part response).
+- **`resolvePermalinkUrl()`**: `facebook.com/{postId}` (dạng `pageId_xxxxx`) redirect 301 về URL permalink chuẩn `facebook.com/permalink.php?story_fbid=...&id=...`. Gọi `fetch(..., { redirect: "manual" })` với cookie để lấy đúng header `Location` của response 301 đó (cắt `#` cuối), dùng URL permalink này làm `original_content_url` — khớp theo request thật (`test3.py`). Nếu không resolve được (không phải 301, thiếu `Location`...) thì fallback về `facebook.com/{postId}` thẳng, không chặn luồng chính.
+- Gọi thẳng `https://www.facebook.com/api/graphql/` (endpoint nội bộ của Facebook web, **không phải Graph API chính thức**) với `doc_id` cố định của mutation `useLinkSharingCreateWrappedUrlMutation`, header/body khớp request thật capture trong `test.py` (kể cả các header client-hint `sec-ch-ua*`, `sec-fetch-*`).
+- Cần `fb_dtsg`/`userId` (extension tự fetch trực tiếp từ facebook.com để lấy tươi, không qua tab đang mở — xem trên, có cache + retry khi lỗi) + `cookie`. `lsd` không còn dùng trong request — khớp theo request đã xác nhận hoạt động thật.
+- Parser chịu được trường hợp Facebook trả về nhiều dòng JSON tách biệt (multi-part response) và tiền tố chống JSON-hijack `for (;;);`.
 - Rủi ro: API nội bộ không chính thức, Facebook có thể đổi `doc_id`/field bắt buộc bất kỳ lúc nào.
 
 ### `facebook.js` — đăng post + cache pageAccessToken

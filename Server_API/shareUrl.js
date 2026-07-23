@@ -57,11 +57,65 @@ function extractErrorMessage(data) {
   return data.errors?.[0]?.message || null;
 }
 
+// Facebook.com/{postId} (dạng "pageId_xxxxx") redirect 301 về URL permalink chuẩn
+// (facebook.com/permalink.php?story_fbid=...&id=...). Dùng đúng URL permalink này làm
+// original_content_url (thay vì facebook.com/{postId} thẳng) — khớp theo request thật đã
+// capture (test3.py). Nếu vì lý do gì đó không resolve được (không phải 301, thiếu header
+// Location...), fallback về facebook.com/{postId} để không chặn hẳn luồng chính.
+async function resolvePermalinkUrl({ cookie, postId }) {
+  const fallbackUrl = `https://www.facebook.com/${postId}`;
+  console.log(`[FB_API] B2) Lấy original_content_url cho postId=${postId} ...`);
+
+  try {
+    const response = await fetch(fallbackUrl, {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "accept-language": "en-US,en;q=0.9",
+        dpr: "1",
+        priority: "u=0, i",
+        "sec-ch-prefers-color-scheme": "light",
+        "sec-ch-ua": '"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"',
+        "sec-ch-ua-full-version-list":
+          '"Not;A=Brand";v="8.0.0.0", "Chromium";v="150.0.7871.130", "Google Chrome";v="150.0.7871.130"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-model": '""',
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-ch-ua-platform-version": '"15.0.0"',
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none",
+        "sec-fetch-user": "?1",
+        "upgrade-insecure-requests": "1",
+        "user-agent": USER_AGENT,
+        "viewport-width": "615",
+        cookie,
+      },
+    });
+
+    const location = response.headers.get("location");
+    if (response.status === 301 && location) {
+      const resolved = location.endsWith("#") ? location.slice(0, -1) : location;
+      console.log(`[FB_API] B2) Kết quả: THÀNH CÔNG — original_content_url=${resolved}`);
+      return resolved;
+    }
+    console.log(
+      `[FB_API] B2) Kết quả: KHÔNG RESOLVE ĐƯỢC (status=${response.status}, không có header Location) — dùng fallback ${fallbackUrl}`
+    );
+  } catch (err) {
+    console.log(`[FB_API] B2) Kết quả: LỖI (${err.message}) — dùng fallback ${fallbackUrl}`);
+  }
+
+  return fallbackUrl;
+}
+
 // Gọi GraphQL nội bộ (endpoint không chính thức, reverse-engineer từ request thật của
 // trình duyệt — Facebook có thể đổi doc_id/field bắt buộc bất kỳ lúc nào) để tạo link
 // share rút gọn dạng facebook.com/share/... từ 1 postId đã tồn tại.
 async function createWrappedShareUrl({ cookie, fbDtsg, userId, postId }) {
-  const originalContentUrl = `https://www.facebook.com/${postId}`;
+  const originalContentUrl = await resolvePermalinkUrl({ cookie, postId });
 
   const form = new URLSearchParams({
     av: userId || "",
@@ -111,6 +165,7 @@ async function createWrappedShareUrl({ cookie, fbDtsg, userId, postId }) {
     cookie,
   };
 
+  console.log(`[FB_API] B3) Tạo wrapped_url (gọi GraphQL) cho postId=${postId} ...`);
   console.log("[wrapped_url] form data:", Object.fromEntries(form));
   console.log("[wrapped_url] headers:", headers);
 
@@ -124,9 +179,9 @@ async function createWrappedShareUrl({ cookie, fbDtsg, userId, postId }) {
   const data = parseGraphQLResponse(raw);
 
   if (!data) {
-    throw new WrappedUrlError(
-      `Facebook trả về dữ liệu không hợp lệ (HTTP ${response.status}). Đầu response: ${raw.slice(0, 300)}`
-    );
+    const message = `Facebook trả về dữ liệu không hợp lệ (HTTP ${response.status}). Đầu response: ${raw.slice(0, 300)}`;
+    console.log(`[FB_API] B3) Kết quả: THẤT BẠI — ${message}`);
+    throw new WrappedUrlError(message);
   }
 
   const wrappedUrl = data?.data?.xfb_create_share_url_wrapper?.share_url_wrapper?.wrapped_url;
@@ -134,9 +189,11 @@ async function createWrappedShareUrl({ cookie, fbDtsg, userId, postId }) {
     const errorMessage =
       extractErrorMessage(data) ||
       `Không lấy được wrapped_url từ Facebook (HTTP ${response.status}). Đầu response: ${raw.slice(0, 300)}`;
+    console.log(`[FB_API] B3) Kết quả: THẤT BẠI — ${errorMessage}`);
     throw new WrappedUrlError(errorMessage);
   }
 
+  console.log(`[FB_API] B3) Kết quả: THÀNH CÔNG — wrappedUrl=${wrappedUrl}`);
   return wrappedUrl;
 }
 

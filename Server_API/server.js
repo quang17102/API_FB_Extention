@@ -177,17 +177,21 @@ app.get("/api/wrapped_url", async (req, res) => {
 // socket: đúng extension đã dùng để lấy session ban đầu — dùng lại (không đổi sang
 // extension khác) khi cần retry với fbDtsg mới.
 async function postAndGetLink(socket, session, pageId, message) {
+  console.log(`[FB_API] B1) Đăng post lên pageId=${pageId} ...`);
   const postResult = await createPost({ cookie: session.cookieString, pageId, message });
   const postId = postResult.data?.id || postResult.data?.post_id || null;
 
   if (!postId) {
+    console.log("[FB_API] B1) Kết quả: THẤT BẠI — không lấy được postId.", postResult);
     const err = new Error("Đăng post thất bại, không lấy được postId.");
     err.status = 502;
     err.stage = "create_post";
     throw err;
   }
+  console.log(`[FB_API] B1) Kết quả: THÀNH CÔNG — postId=${postId}`);
 
   if (!session.fbDtsg) {
+    console.log("[FB_API] B2) Kết quả: THẤT BẠI — session không có fbDtsg.");
     const err = new Error(
       `Đã đăng post thành công (postId: ${postId}) nhưng không lấy được fb_dtsg để tạo wrapped_url. Gọi lại GET /api/wrapped_url?postId=${postId} sau.`
     );
@@ -207,6 +211,7 @@ async function postAndGetLink(socket, session, pageId, message) {
     return { postId, wrappedUrl };
   } catch (err) {
     // fbDtsg cache (phía extension) có thể đã cũ -> lấy token mới rồi thử lại đúng 1 lần.
+    console.log(`[FB_API] B3) Lỗi lần 1 (${err.message}) — lấy fbDtsg mới rồi thử lại...`);
     try {
       const freshSession = await getSessionFromSocket(socket, { forceFreshTokens: true });
       if (!freshSession.fbDtsg) throw err;
@@ -219,6 +224,7 @@ async function postAndGetLink(socket, session, pageId, message) {
       });
       return { postId, wrappedUrl };
     } catch (retryErr) {
+      console.log(`[FB_API] B3) Kết quả sau khi thử lại: THẤT BẠI — ${retryErr.message}`);
       retryErr.stage = "wrapped_url";
       retryErr.postId = postId;
       throw retryErr;
