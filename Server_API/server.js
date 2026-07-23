@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const { WebSocketServer } = require("ws");
 const { createPost } = require("./facebook");
 const { createWrappedShareUrl } = require("./shareUrl");
+const { getCachedFbDtsg, saveFbDtsg } = require("./fbDtsgCache");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -33,22 +34,43 @@ const pendingRequests = new Map(); // requestId -> { resolve, reject, timer }
 // Gửi yêu cầu "get_cookies" tới 1 socket cụ thể, chờ phản hồi qua WebSocket.
 // options.forceFreshTokens: true -> yêu cầu extension bỏ qua cache fbDtsg, fetch mới hẳn
 // (dùng khi retry sau khi Facebook từ chối request vì token cũ).
+// Đây là bước xảy ra TRƯỚC B1 — delay ở đây chủ yếu do extension phải fetch fbDtsg mới
+// (cache miss lần đầu, hoặc forceFreshTokens) thay vì dùng cache có sẵn (gần như tức thời).
 function getSessionFromSocket(socket, options = {}) {
   if (!socket || socket.readyState !== socket.OPEN) {
     return Promise.reject(new LiveCookieError("Extension đã ngắt kết nối.", 503));
   }
 
   const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
+  const label = options.forceFreshTokens ? "B0) Lấy session MỚI (forceFreshTokens)" : "B0) Lấy session từ extension";
+  console.log(`[FB_API] ${label} ...`);
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingRequests.delete(requestId);
+      console.log(`[FB_API] ${label} — Kết quả: TIMEOUT sau ${Date.now() - startedAt}ms.`);
       reject(new LiveCookieError("Hết thời gian chờ extension phản hồi.", 504));
     }, LIVE_REQUEST_TIMEOUT_MS);
 
-    pendingRequests.set(requestId, { resolve, reject, timer });
+    pendingRequests.set(requestId, {
+      resolve: (session) => {
+        console.log(`[FB_API] ${label} — Kết quả: THÀNH CÔNG sau ${Date.now() - startedAt}ms.`);
+        resolve(session);
+      },
+      reject: (err) => {
+        console.log(`[FB_API] ${label} — Kết quả: THẤT BẠI sau ${Date.now() - startedAt}ms (${err.message}).`);
+        reject(err);
+      },
+      timer,
+    });
     socket.send(
-      JSON.stringify({ type: "get_cookies", requestId, forceFreshTokens: !!options.forceFreshTokens })
+      JSON.stringify({
+        type: "get_cookies",
+        requestId,
+        forceFreshTokens: !!options.forceFreshTokens,
+        skipTokenFetch: !!options.skipTokenFetch,
+      })
     );
   });
 }
@@ -79,6 +101,38 @@ function getLiveSession(pageId, options) {
   return getSessionFromSocket(socket, options);
 }
 
+// Lấy session CÓ fbDtsg cho 1 pageId, ưu tiên dùng fbDtsg đã cache ở server
+// (fbDtsgCache.json) thay vì luôn bắt extension fetch mới. Cache này bền hơn cache trong
+// bộ nhớ extension vì không mất khi service worker MV3 bị Chrome tắt/khởi động lại — chỉ
+// mất khi server restart. Chỉ fetch mới (và lưu lại cache) khi chưa có cache hoặc khi
+// options.forceFreshTokens (dùng lúc retry sau khi Facebook từ chối request).
+async function getSessionForPage(socket, pageId, options = {}) {
+  if (!options.forceFreshTokens) {
+    const cached = await getCachedFbDtsg(pageId);
+    if (cached && cached.fbDtsg) {
+      const session = await getSessionFromSocket(socket, { skipTokenFetch: true });
+      return { ...session, fbDtsg: cached.fbDtsg, userId: cached.userId || session.userId };
+    }
+  }
+
+  const session = await getSessionFromSocket(socket, { forceFreshTokens: true });
+  if (session.fbDtsg) {
+    await saveFbDtsg(pageId, { fbDtsg: session.fbDtsg, userId: session.userId });
+  }
+  return session;
+}
+
+// Lấy session CÓ fbDtsg (cache-first) từ đúng extension đã đăng ký phụ trách pageId này.
+function getLiveSessionForPage(pageId, options) {
+  let socket;
+  try {
+    socket = pickSocketForPageId(pageId);
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  return getSessionForPage(socket, pageId, options);
+}
+
 // Chọn extension tiếp theo theo vòng xoay toàn cục — dùng cho chế độ tự động của
 // /api/create_post_with_link khi không chỉ định pageId.
 function pickNextAutoRotate() {
@@ -88,19 +142,20 @@ function pickNextAutoRotate() {
   return picked;
 }
 
+// Endpoint này chỉ trả cookieString, không cần fbDtsg -> luôn skipTokenFetch để nhanh.
 app.get("/api/cookie/live", async (req, res) => {
   try {
     const { pageId } = req.query;
     let session;
 
     if (pageId) {
-      session = await getLiveSession(pageId);
+      session = await getLiveSession(pageId, { skipTokenFetch: true });
     } else {
       const anySocket = allSockets.values().next().value;
       if (!anySocket) {
         return res.status(503).json({ error: "Chưa có extension nào kết nối WebSocket tới server." });
       }
-      session = await getSessionFromSocket(anySocket);
+      session = await getSessionFromSocket(anySocket, { skipTokenFetch: true });
     }
 
     res.json({ cookieString: session.cookieString });
@@ -110,7 +165,7 @@ app.get("/api/cookie/live", async (req, res) => {
 });
 
 // Đăng post lên Facebook Page bằng cookie mới nhất lấy realtime từ đúng extension
-// đã đăng ký phụ trách pageId này.
+// đã đăng ký phụ trách pageId này. createPost không dùng fbDtsg -> skipTokenFetch.
 app.post("/api/create_post", async (req, res) => {
   const { pageId, message } = req.body || {};
   if (!pageId || !message) {
@@ -118,7 +173,7 @@ app.post("/api/create_post", async (req, res) => {
   }
 
   try {
-    const session = await getLiveSession(pageId);
+    const session = await getLiveSession(pageId, { skipTokenFetch: true });
     const result = await createPost({ cookie: session.cookieString, pageId, message });
     res.json({ ok: true, postId: result.data?.id || result.data?.post_id || null, result });
   } catch (err) {
@@ -138,7 +193,7 @@ app.get("/api/wrapped_url", async (req, res) => {
 
   try {
     const socket = pickSocketForPageId(pageId);
-    const session = await getSessionFromSocket(socket);
+    const session = await getSessionForPage(socket, pageId);
     if (!session.fbDtsg) {
       return res.status(502).json({
         error: "Không lấy được fb_dtsg. Hãy đảm bảo profile đó đang đăng nhập Facebook, rồi thử lại.",
@@ -154,8 +209,9 @@ app.get("/api/wrapped_url", async (req, res) => {
       });
       return res.json({ wrappedUrl });
     } catch (err) {
-      // fbDtsg cache (phía extension) có thể đã cũ -> lấy token mới rồi thử lại đúng 1 lần.
-      const freshSession = await getSessionFromSocket(socket, { forceFreshTokens: true });
+      // fbDtsg cache (ở server) có thể đã cũ -> lấy token mới rồi thử lại đúng 1 lần (tự
+      // ghi đè lại cache nếu thành công).
+      const freshSession = await getSessionForPage(socket, pageId, { forceFreshTokens: true });
       if (!freshSession.fbDtsg) throw err;
 
       const wrappedUrl = await createWrappedShareUrl({
@@ -178,17 +234,19 @@ app.get("/api/wrapped_url", async (req, res) => {
 // extension khác) khi cần retry với fbDtsg mới.
 async function postAndGetLink(socket, session, pageId, message) {
   console.log(`[FB_API] B1) Đăng post lên pageId=${pageId} ...`);
+  const b1StartedAt = Date.now();
   const postResult = await createPost({ cookie: session.cookieString, pageId, message });
   const postId = postResult.data?.id || postResult.data?.post_id || null;
+  const b1Ms = Date.now() - b1StartedAt;
 
   if (!postId) {
-    console.log("[FB_API] B1) Kết quả: THẤT BẠI — không lấy được postId.", postResult);
+    console.log(`[FB_API] B1) Kết quả: THẤT BẠI sau ${b1Ms}ms — không lấy được postId.`, postResult);
     const err = new Error("Đăng post thất bại, không lấy được postId.");
     err.status = 502;
     err.stage = "create_post";
     throw err;
   }
-  console.log(`[FB_API] B1) Kết quả: THÀNH CÔNG — postId=${postId}`);
+  console.log(`[FB_API] B1) Kết quả: THÀNH CÔNG sau ${b1Ms}ms — postId=${postId}`);
 
   if (!session.fbDtsg) {
     console.log("[FB_API] B2) Kết quả: THẤT BẠI — session không có fbDtsg.");
@@ -210,10 +268,11 @@ async function postAndGetLink(socket, session, pageId, message) {
     });
     return { postId, wrappedUrl };
   } catch (err) {
-    // fbDtsg cache (phía extension) có thể đã cũ -> lấy token mới rồi thử lại đúng 1 lần.
+    // fbDtsg cache (ở server) có thể đã cũ -> lấy token mới rồi thử lại đúng 1 lần (tự
+    // ghi đè lại cache nếu thành công).
     console.log(`[FB_API] B3) Lỗi lần 1 (${err.message}) — lấy fbDtsg mới rồi thử lại...`);
     try {
-      const freshSession = await getSessionFromSocket(socket, { forceFreshTokens: true });
+      const freshSession = await getSessionForPage(socket, pageId, { forceFreshTokens: true });
       if (!freshSession.fbDtsg) throw err;
 
       const wrappedUrl = await createWrappedShareUrl({
@@ -244,7 +303,7 @@ app.post("/api/create_post_with_link", async (req, res) => {
   if (pageId) {
     try {
       const socket = pickSocketForPageId(pageId);
-      const session = await getSessionFromSocket(socket);
+      const session = await getSessionForPage(socket, pageId);
       const { postId, wrappedUrl } = await postAndGetLink(socket, session, pageId, message);
       return res.json({ ok: true, pageId, postId, wrappedUrl });
     } catch (err) {
@@ -263,7 +322,7 @@ app.post("/api/create_post_with_link", async (req, res) => {
     if (!picked) break;
 
     try {
-      const session = await getSessionFromSocket(picked.socket);
+      const session = await getSessionForPage(picked.socket, picked.pageId);
       const { postId, wrappedUrl } = await postAndGetLink(picked.socket, session, picked.pageId, message);
       return res.json({
         ok: true,

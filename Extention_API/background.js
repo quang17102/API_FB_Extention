@@ -27,7 +27,7 @@ function connect() {
     }
 
     if (msg.type === "get_cookies") {
-      handleGetCookies(msg.requestId, !!msg.forceFreshTokens);
+      handleGetCookies(msg.requestId, !!msg.skipTokenFetch);
     }
   };
 
@@ -114,24 +114,12 @@ async function fetchFreshFacebookTokens() {
   return { fbDtsg: null, lsd: null, userId: null };
 }
 
-// Cache fbDtsg/lsd trong bộ nhớ service worker — chỉ fetch mới khi chưa có cache hoặc khi
-// server yêu cầu tường minh (forceFreshTokens: true, dùng lúc retry sau khi Facebook từ
-// chối request vì token cũ). Giảm hẳn độ trễ/số request so với fetch mới mỗi lần gọi API.
-let cachedTokens = null;
-
-async function getFacebookTokens(forceFresh) {
-  if (!forceFresh && cachedTokens) {
-    console.log("[FB_API] Dùng fbDtsg đã cache (không fetch lại).");
-    return cachedTokens;
-  }
-  const tokens = await fetchFreshFacebookTokens();
-  if (tokens.fbDtsg) {
-    cachedTokens = tokens;
-  }
-  return tokens;
-}
-
-async function handleGetCookies(requestId, forceFreshTokens) {
+// fbDtsg giờ được cache ở phía SERVER (fbDtsgCache.json), không phải trong bộ nhớ
+// extension nữa — cache trong service worker dễ mất khi Chrome tắt SW do rảnh (~30s),
+// còn cache ở server thì bền hơn (sống sót qua việc SW restart, chỉ mất khi server restart).
+// skipTokenFetch: true -> server đã có fbDtsg cache sẵn, extension chỉ cần trả cookie
+// (đọc local, không cần fetch mạng) cho nhanh.
+async function handleGetCookies(requestId, skipTokenFetch) {
   try {
     const cookies = await chrome.cookies.getAll({ domain: "facebook.com" });
     console.log(`[FB_API] get_cookies: ${cookies.length} cookie(s) cho domain facebook.com.`);
@@ -143,7 +131,9 @@ async function handleGetCookies(requestId, forceFreshTokens) {
     // request (đã kiểm chứng thực tế). Ưu tiên i_user nếu có, fallback c_user nếu không.
     const iUserCookie = cookies.find((c) => c.name === "i_user");
 
-    const session = await getFacebookTokens(forceFreshTokens);
+    const session = skipTokenFetch
+      ? { fbDtsg: null, lsd: null, userId: null }
+      : await fetchFreshFacebookTokens();
     const userId = (iUserCookie || cUserCookie)?.value || null;
     const { fbDtsg, lsd } = session;
 

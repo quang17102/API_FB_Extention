@@ -64,6 +64,7 @@ function extractErrorMessage(data) {
 // Location...), fallback về facebook.com/{postId} để không chặn hẳn luồng chính.
 async function resolvePermalinkUrl({ cookie, postId }) {
   const fallbackUrl = `https://www.facebook.com/${postId}`;
+  const startedAt = Date.now();
   console.log(`[FB_API] B2) Lấy original_content_url cho postId=${postId} ...`);
 
   try {
@@ -98,14 +99,14 @@ async function resolvePermalinkUrl({ cookie, postId }) {
     const location = response.headers.get("location");
     if (response.status === 301 && location) {
       const resolved = location.endsWith("#") ? location.slice(0, -1) : location;
-      console.log(`[FB_API] B2) Kết quả: THÀNH CÔNG — original_content_url=${resolved}`);
+      console.log(`[FB_API] B2) Kết quả: THÀNH CÔNG sau ${Date.now() - startedAt}ms — original_content_url=${resolved}`);
       return resolved;
     }
     console.log(
-      `[FB_API] B2) Kết quả: KHÔNG RESOLVE ĐƯỢC (status=${response.status}, không có header Location) — dùng fallback ${fallbackUrl}`
+      `[FB_API] B2) Kết quả: KHÔNG RESOLVE ĐƯỢC sau ${Date.now() - startedAt}ms (status=${response.status}, không có header Location) — dùng fallback ${fallbackUrl}`
     );
   } catch (err) {
-    console.log(`[FB_API] B2) Kết quả: LỖI (${err.message}) — dùng fallback ${fallbackUrl}`);
+    console.log(`[FB_API] B2) Kết quả: LỖI sau ${Date.now() - startedAt}ms (${err.message}) — dùng fallback ${fallbackUrl}`);
   }
 
   return fallbackUrl;
@@ -168,6 +169,7 @@ async function createWrappedShareUrl({ cookie, fbDtsg, userId, postId }) {
   console.log(`[FB_API] B3) Tạo wrapped_url (gọi GraphQL) cho postId=${postId} ...`);
   console.log("[wrapped_url] form data:", Object.fromEntries(form));
   console.log("[wrapped_url] headers:", headers);
+  const b3StartedAt = Date.now();
 
   const response = await fetch(GRAPHQL_URL, {
     method: "POST",
@@ -177,10 +179,11 @@ async function createWrappedShareUrl({ cookie, fbDtsg, userId, postId }) {
 
   const raw = await response.text();
   const data = parseGraphQLResponse(raw);
+  const b3Ms = Date.now() - b3StartedAt;
 
   if (!data) {
     const message = `Facebook trả về dữ liệu không hợp lệ (HTTP ${response.status}). Đầu response: ${raw.slice(0, 300)}`;
-    console.log(`[FB_API] B3) Kết quả: THẤT BẠI — ${message}`);
+    console.log(`[FB_API] B3) Kết quả: THẤT BẠI sau ${b3Ms}ms — ${message}`);
     throw new WrappedUrlError(message);
   }
 
@@ -189,11 +192,11 @@ async function createWrappedShareUrl({ cookie, fbDtsg, userId, postId }) {
     const errorMessage =
       extractErrorMessage(data) ||
       `Không lấy được wrapped_url từ Facebook (HTTP ${response.status}). Đầu response: ${raw.slice(0, 300)}`;
-    console.log(`[FB_API] B3) Kết quả: THẤT BẠI — ${errorMessage}`);
+    console.log(`[FB_API] B3) Kết quả: THẤT BẠI sau ${b3Ms}ms — ${errorMessage}`);
     throw new WrappedUrlError(errorMessage);
   }
 
-  console.log(`[FB_API] B3) Kết quả: THÀNH CÔNG — wrappedUrl=${wrappedUrl}`);
+  console.log(`[FB_API] B3) Kết quả: THÀNH CÔNG sau ${b3Ms}ms — wrappedUrl=${wrappedUrl}`);
   return wrappedUrl;
 }
 
