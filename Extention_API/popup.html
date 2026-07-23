@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<title>Get Tab Cookies</title>
+<style>
+  body {
+    width: 340px;
+    font-family: -apple-system, Segoe UI, Arial, sans-serif;
+    padding: 12px;
+    box-sizing: border-box;
+  }
+  h3 {
+    margin: 0 0 8px;
+    font-size: 14px;
+  }
+  #tabUrl {
+    font-size: 11px;
+    color: #666;
+    word-break: break-all;
+    margin-bottom: 8px;
+  }
+  button {
+    width: 100%;
+    padding: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    border: none;
+    border-radius: 4px;
+    color: #fff;
+    background: #2563eb;
+    margin-bottom: 8px;
+  }
+  button:hover {
+    background: #1d4ed8;
+  }
+  button#copyBtn {
+    background: #16a34a;
+  }
+  button#copyBtn:hover {
+    background: #15803d;
+  }
+  textarea {
+    width: 100%;
+    height: 160px;
+    box-sizing: border-box;
+    font-family: Consolas, monospace;
+    font-size: 11px;
+    resize: vertical;
+  }
+  #status {
+    font-size: 11px;
+    color: #16a34a;
+    height: 14px;
+    margin-top: 4px;
+  }
+  hr {
+    border: none;
+    border-top: 1px solid #e5e7eb;
+    margin: 12px 0;
+  }
+  input {
+    width: 100%;
+    padding: 6px 8px;
+    font-size: 12px;
+    box-sizing: border-box;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    margin-bottom: 8px;
+  }
+  button#savePageIdBtn {
+    background: #ea580c;
+  }
+  button#savePageIdBtn:hover {
+    background: #c2410c;
+  }
+  #pageIdStatus {
+    font-size: 11px;
+    color: #16a34a;
+    height: 14px;
+    margin-top: -4px;
+  }
+</style>
+</head>
+<body>
+  <h3>Lấy cookie của tab đang mở</h3>
+  <div id="tabUrl">Chưa có tab nào được chọn</div>
+  <button id="getCookiesBtn">Lấy Cookie</button>
+  <textarea id="output" placeholder="Cookie sẽ hiển thị ở đây..." readonly></textarea>
+  <button id="copyBtn">Copy Cookie</button>
+  <div id="status"></div>
+
+  <hr />
+
+  <h3>Page ID extension này phụ trách</h3>
+  <input id="pageIdInput" type="text" placeholder="Ví dụ: 904352212764888" />
+  <button id="savePageIdBtn">Lưu Page ID</button>
+  <div id="pageIdStatus"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

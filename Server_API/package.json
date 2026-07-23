@@ -1,0 +1,15 @@
+{
+  "name": "server-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API nhận và trả cookie từ Extention_API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "facebook-business": "^2.0.0",
+    "ws": "^8.21.1"
+  }
+}
