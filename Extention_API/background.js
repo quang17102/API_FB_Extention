@@ -79,35 +79,45 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-// Yêu cầu tới từ server (curl/API), không phải người dùng click trực tiếp, nên không thể
-// dựa vào "tab đang active" — lúc đó Chrome có thể coi 1 cửa sổ khác là "focus gần nhất"
-// dù cửa sổ đó không chứa tab Facebook. Tìm thẳng tab nào đang mở facebook.com thay vì đoán
-// qua active/lastFocusedWindow.
-async function findFacebookTab() {
-  const fbTabs = await chrome.tabs.query({ url: ["*://*.facebook.com/*"] });
-  if (fbTabs.length) {
-    return fbTabs.find((t) => t.active) || fbTabs[0];
+// Không phụ thuộc tab nào đang mở/đang active — lấy thẳng cookie theo domain và fetch
+// trực tiếp 1 trang Facebook (kèm cookie tự động nhờ credentials:"include") để luôn có
+// fb_dtsg/lsd TƯƠI MỚI từ server. Đọc HTML tab đã mở sẵn (cách cũ) dễ bị stale vì
+// Facebook là SPA, có thể tự xoay token phía client mà không re-render lại HTML gốc.
+const TOKEN_DISCOVERY_URLS = ["https://www.facebook.com/", "https://business.facebook.com/"];
+
+async function fetchFreshFacebookTokens() {
+  for (const url of TOKEN_DISCOVERY_URLS) {
+    try {
+      const res = await fetch(url, { credentials: "include", cache: "no-store" });
+      const html = await res.text();
+      const tokens = parseFacebookTokens(html);
+      console.log(
+        `[FB_API] fetch tokens từ ${url}: status=${res.status}, bytes=${html.length}, ` +
+          `fbDtsg=${tokens.fbDtsg ? tokens.fbDtsg.slice(0, 12) + "..." : "null"}, ` +
+          `lsd=${tokens.lsd ? tokens.lsd.slice(0, 8) + "..." : "null"}, userId=${tokens.userId}`
+      );
+      if (tokens.fbDtsg && tokens.lsd) return tokens;
+    } catch (err) {
+      console.log(`[FB_API] fetch tokens từ ${url} lỗi: ${err.message}`);
+    }
   }
-  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  return activeTab || null;
+  return { fbDtsg: null, lsd: null, userId: null };
 }
 
 async function handleGetCookies(requestId) {
   try {
-    const tab = await findFacebookTab();
-    if (!tab || !tab.url) {
-      throw new Error("Không tìm thấy tab Facebook nào đang mở.");
-    }
-
-    const cookies = await chrome.cookies.getAll({ url: tab.url });
-    console.log(`[FB_API] get_cookies: tab.url=${tab.url} -> ${cookies.length} cookie(s).`);
+    const cookies = await chrome.cookies.getAll({ domain: "facebook.com" });
+    console.log(`[FB_API] get_cookies: ${cookies.length} cookie(s) cho domain facebook.com.`);
     const cookieString = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     const cUserCookie = cookies.find((c) => c.name === "c_user");
+    // i_user xuất hiện khi trình duyệt đang "act as Page" theo hệ thống định danh mới của
+    // Meta — lúc đó fb_dtsg lấy được sẽ scope theo danh tính Page (i_user), không phải tài
+    // khoản cá nhân (c_user). Dùng nhầm c_user trong trường hợp này khiến Facebook từ chối
+    // request (đã kiểm chứng thực tế). Ưu tiên i_user nếu có, fallback c_user nếu không.
+    const iUserCookie = cookies.find((c) => c.name === "i_user");
 
-    const session = await extractFacebookSession(tab.id);
-    // Ưu tiên userId cá nhân từ cookie c_user (đây mới là danh tính đăng nhập thật);
-    // chỉ dùng USER_ID/ACCOUNT_ID/actorID lấy từ HTML làm phương án dự phòng.
-    const userId = cUserCookie ? cUserCookie.value : session.userId;
+    const session = await fetchFreshFacebookTokens();
+    const userId = (iUserCookie || cUserCookie)?.value || null;
     const { fbDtsg, lsd } = session;
 
     ws.send(
@@ -128,20 +138,6 @@ async function handleGetCookies(requestId) {
         error: err.message,
       })
     );
-  }
-}
-
-// Lấy fb_dtsg/lsd/userId trực tiếp từ HTML của tab Facebook đang active (không phải
-// tab nào cũng là Facebook — nếu không tìm thấy thì trả về null, không coi là lỗi).
-async function extractFacebookSession(tabId) {
-  try {
-    const [{ result: html }] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => document.documentElement.outerHTML,
-    });
-    return parseFacebookTokens(html || "");
-  } catch {
-    return { fbDtsg: null, lsd: null, userId: null };
   }
 }
 

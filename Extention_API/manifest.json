@@ -3,7 +3,7 @@
   "name": "Get Tab Cookies",
   "version": "1.0.0",
   "description": "Lấy cookie của tab đang mở bằng một cú click",
-  "permissions": ["cookies", "activeTab", "tabs", "alarms", "scripting", "storage"],
+  "permissions": ["cookies", "activeTab", "tabs", "alarms", "storage"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

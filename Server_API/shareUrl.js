@@ -60,7 +60,7 @@ function extractErrorMessage(data) {
 // Gọi GraphQL nội bộ (endpoint không chính thức, reverse-engineer từ request thật của
 // trình duyệt — Facebook có thể đổi doc_id/field bắt buộc bất kỳ lúc nào) để tạo link
 // share rút gọn dạng facebook.com/share/... từ 1 postId đã tồn tại.
-async function createWrappedShareUrl({ cookie, fbDtsg, lsd, userId, postId }) {
+async function createWrappedShareUrl({ cookie, fbDtsg, userId, postId }) {
   const originalContentUrl = `https://www.facebook.com/${postId}`;
 
   const form = new URLSearchParams({
@@ -71,12 +71,9 @@ async function createWrappedShareUrl({ cookie, fbDtsg, lsd, userId, postId }) {
     __req: "15",
     dpr: "1",
     __ccg: "EXCELLENT",
-    __rev: "1043549335",
     __comet_req: "15",
     fb_dtsg: fbDtsg,
-    __spin_r: "1043549335",
     __spin_b: "trunk",
-    __spin_t: String(Math.floor(Date.now() / 1000)),
     __crn: "comet.fbweb.CometSinglePostDialogRoute",
     fb_api_caller_class: "RelayModern",
     fb_api_req_friendly_name: "useLinkSharingCreateWrappedUrlMutation",
@@ -110,9 +107,7 @@ async function createWrappedShareUrl({ cookie, fbDtsg, lsd, userId, postId }) {
     "sec-fetch-mode": "cors",
     "sec-fetch-site": "same-origin",
     "user-agent": USER_AGENT,
-    "x-asbd-id": "359341",
     "x-fb-friendly-name": "useLinkSharingCreateWrappedUrlMutation",
-    "x-fb-lsd": lsd,
     cookie,
   };
 

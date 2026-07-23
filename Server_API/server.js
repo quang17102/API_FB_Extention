@@ -122,17 +122,15 @@ app.get("/api/wrapped_url", async (req, res) => {
 
   try {
     const session = await getLiveSession(pageId);
-    if (!session.fbDtsg || !session.lsd) {
+    if (!session.fbDtsg) {
       return res.status(502).json({
-        error:
-          "Không lấy được fb_dtsg/lsd từ tab đang active. Hãy đảm bảo tab Facebook (đã đăng nhập) đang mở và active, rồi thử lại.",
+        error: "Không lấy được fb_dtsg. Hãy đảm bảo profile đó đang đăng nhập Facebook, rồi thử lại.",
       });
     }
 
     const wrappedUrl = await createWrappedShareUrl({
       cookie: session.cookieString,
       fbDtsg: session.fbDtsg,
-      lsd: session.lsd,
       userId: session.userId,
       postId,
     });
@@ -157,9 +155,9 @@ async function postAndGetLink(session, pageId, message) {
     throw err;
   }
 
-  if (!session.fbDtsg || !session.lsd) {
+  if (!session.fbDtsg) {
     const err = new Error(
-      `Đã đăng post thành công (postId: ${postId}) nhưng không lấy được fb_dtsg/lsd để tạo wrapped_url. Gọi lại GET /api/wrapped_url?postId=${postId} sau khi mở tab Facebook.`
+      `Đã đăng post thành công (postId: ${postId}) nhưng không lấy được fb_dtsg để tạo wrapped_url. Gọi lại GET /api/wrapped_url?postId=${postId} sau.`
     );
     err.status = 502;
     err.stage = "wrapped_url";
@@ -171,7 +169,6 @@ async function postAndGetLink(session, pageId, message) {
     const wrappedUrl = await createWrappedShareUrl({
       cookie: session.cookieString,
       fbDtsg: session.fbDtsg,
-      lsd: session.lsd,
       userId: session.userId,
       postId,
     });
@@ -248,6 +245,22 @@ app.get("/api/pages", (req, res) => {
       .filter((r) => r.socket.readyState === r.socket.OPEN)
       .map((r) => ({ pageId: r.pageId })),
   });
+});
+
+// Chỉ dùng để debug: trả nguyên session (cookie/fbDtsg/userId) của 1 pageId, phục vụ
+// test-wrapped-url.js — không dùng trong luồng chạy thật.
+app.get("/api/debug/session", async (req, res) => {
+  const { pageId } = req.query;
+  if (!pageId) {
+    return res.status(400).json({ error: "Thiếu pageId." });
+  }
+
+  try {
+    const session = await getLiveSession(pageId);
+    res.json(session);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
 });
 
 app.get("/", (req, res) => {
